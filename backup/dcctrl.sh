@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -euo pipefail
+
 SERVICES_DIR="/opt/services"
 
 usage() {
