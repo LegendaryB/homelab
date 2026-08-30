@@ -1,0 +1,7 @@
+[Unit]
+Description=Proxmox Backup Client
+
+[Service]
+Type=oneshot
+ExecStart=/opt/proxmox-backup/run.sh
+User=root
