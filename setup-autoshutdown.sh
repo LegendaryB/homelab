@@ -3,15 +3,16 @@
 # setup-autoshutdown.sh — Configure automated daily shutdown via systemd timer
 #
 # What it does:
-#   1. Accepts (or defaults to) a daily shutdown time (HH:MM:SS)
-#   2. Installs a systemd service that triggers systemctl poweroff
-#   3. Installs a systemd calendar timer to trigger the service daily
-#   4. Enables and activates the timer immediately
-#   5. Shows the next scheduled shutdown trigger
+#   1. Prompts the user for a daily shutdown time (or takes $1 / default)
+#   2. Validates the time format
+#   3. Installs a systemd service that triggers systemctl poweroff
+#   4. Installs a systemd calendar timer to trigger the service daily
+#   5. Enables and activates the timer immediately
+#   6. Displays the next scheduled shutdown trigger
 #
 # Usage:
-#   sudo ./setup-autoshutdown.sh            # default target: 23:30:00
-#   sudo ./setup-autoshutdown.sh 01:00:00   # custom target time
+#   sudo ./setup-autoshutdown.sh            # interactive prompt (with default)
+#   sudo ./setup-autoshutdown.sh 23:30:00   # non-interactive via argument
 #
 set -euo pipefail
 
@@ -20,15 +21,26 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# --- 1. Determine target shutdown time --------------------------------------
-SHUTDOWN_TIME="${1:-23:30:00}"
+# --- 1. Query target shutdown time from user --------------------------------
+DEFAULT_TIME="23:30:00"
+INPUT_TIME="${1:-}"
 
-# Validate HH:MM or HH:MM:SS format
+if [[ -z "$INPUT_TIME" ]]; then
+    # Prompt user interactively if running in a terminal
+    read -rp "Enter daily shutdown time [HH:MM:SS] (default: ${DEFAULT_TIME}): " USER_INPUT
+    SHUTDOWN_TIME="${USER_INPUT:-$DEFAULT_TIME}"
+else
+    SHUTDOWN_TIME="$INPUT_TIME"
+fi
+
+# Validate format using date
 if ! date -d "$SHUTDOWN_TIME" >/dev/null 2>&1; then
     echo "ERROR: Invalid time format '$SHUTDOWN_TIME'. Use HH:MM or HH:MM:SS (e.g. 23:30:00)." >&2
     exit 1
 fi
 
+# Standardize format to HH:MM:SS
+SHUTDOWN_TIME=$(date -d "$SHUTDOWN_TIME" +%H:%M:%S)
 echo "Target shutdown time set to: $SHUTDOWN_TIME (local time)"
 
 # --- 2. Install systemd service ---------------------------------------------
