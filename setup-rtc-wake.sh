@@ -4,14 +4,14 @@
 #
 # What it does:
 #   1. Verifies kernel sysfs RTC support (/sys/class/rtc/rtc0/wakealarm)
-#   2. Accepts (or defaults to) a target wake time (HH:MM:SS)
+#   2. Prompts the user for a daily wake time (or takes $1 / default)
 #   3. Installs an inline systemd shutdown hook (no auxiliary scripts)
 #   4. Enables and arms the service immediately
 #   5. Reads and displays the active hardware RTC alarm status
 #
 # Usage:
-#   sudo ./setup-rtc-wake.sh            # default target: 19:30:00
-#   sudo ./setup-rtc-wake.sh 07:00:00   # custom target time
+#   sudo ./setup-rtc-wake.sh            # interactive prompt (with default)
+#   sudo ./setup-rtc-wake.sh 07:00:00   # non-interactive via argument
 #
 set -euo pipefail
 
@@ -30,15 +30,25 @@ if [[ ! -w "$SYSFS_RTC" ]]; then
     exit 1
 fi
 
-# --- 2. Determine target wake time ------------------------------------------
-WAKE_TIME="${1:-19:30:00}"
+# --- 2. Query target wake time from user ------------------------------------
+DEFAULT_TIME="19:30:00"
+INPUT_TIME="${1:-}"
 
-# Validate HH:MM or HH:MM:SS format
+if [[ -z "$INPUT_TIME" ]]; then
+    read -rp "Enter daily wake time [HH:MM:SS] (default: ${DEFAULT_TIME}): " USER_INPUT
+    WAKE_TIME="${USER_INPUT:-$DEFAULT_TIME}"
+else
+    WAKE_TIME="$INPUT_TIME"
+fi
+
+# Validate format using date
 if ! date -d "$WAKE_TIME" >/dev/null 2>&1; then
     echo "ERROR: Invalid time format '$WAKE_TIME'. Use HH:MM or HH:MM:SS (e.g. 19:30:00)." >&2
     exit 1
 fi
 
+# Standardize format to HH:MM:SS
+WAKE_TIME=$(date -d "$WAKE_TIME" +%H:%M:%S)
 echo "Target wake time set to: $WAKE_TIME (local time)"
 
 # --- 3. Install systemd service ---------------------------------------------
