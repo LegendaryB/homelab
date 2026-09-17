@@ -5,13 +5,13 @@
 # What it does:
 #   1. Verifies kernel sysfs RTC support (/sys/class/rtc/rtc0/wakealarm)
 #   2. Prompts the user for a daily wake time (or takes $1 / default)
-#   3. Installs an inline systemd shutdown hook (no auxiliary scripts)
+#   3. Installs a robust inline systemd shutdown hook with reset delay & buffer
 #   4. Enables and arms the service immediately
 #   5. Reads and displays the active hardware RTC alarm status
 #
 # Usage:
 #   sudo ./setup-rtc-wake.sh            # interactive prompt (with default)
-#   sudo ./setup-rtc-wake.sh 07:00:00   # non-interactive via argument
+#   sudo ./setup-rtc-wake.sh 19:30:00   # non-interactive via argument
 #
 set -euo pipefail
 
@@ -63,7 +63,13 @@ Before=shutdown.target poweroff.target halt.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c 'echo 0 > $SYSFS_RTC && date -d "\$([ \$(date +%%s) -ge \$(date -d $WAKE_TIME +%%s) ] && echo tomorrow) $WAKE_TIME" +%%s > $SYSFS_RTC'
+ExecStart=/bin/sh -c '\
+  TARGET=\$(date -d "$WAKE_TIME" +%%s); \
+  NOW=\$(date +%%s); \
+  [ \$((TARGET - NOW)) -le 120 ] && TARGET=\$(date -d "tomorrow $WAKE_TIME" +%%s); \
+  echo 0 > $SYSFS_RTC; \
+  sleep 0.5; \
+  echo "\$TARGET" > $SYSFS_RTC'
 
 [Install]
 WantedBy=shutdown.target poweroff.target halt.target
