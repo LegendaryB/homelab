@@ -5,9 +5,11 @@
 # What it does:
 #   1. Verifies kernel sysfs RTC support (/sys/class/rtc/rtc0/wakealarm)
 #   2. Prompts the user for a daily wake time (or takes $1 / default)
-#   3. Installs a robust inline systemd shutdown hook with reset delay & buffer
-#   4. Enables and arms the service immediately
-#   5. Reads and displays the active hardware RTC alarm status
+#   3. Cleans up any legacy rtc-wake.service to prevent race conditions
+#   4. Ensures the systemd shutdown directory exists and installs the hook
+#      (executes after hwclock/timesyncd, preventing alarm resets during poweroff)
+#   5. Arms the alarm immediately for the next cycle
+#   6. Reads and displays the active hardware RTC alarm status
 #
 # Usage:
 #   sudo ./setup-rtc-wake.sh            # interactive prompt (with default)
@@ -51,57 +53,79 @@ fi
 WAKE_TIME=$(date -d "$WAKE_TIME" +%H:%M:%S)
 echo "Target wake time set to: $WAKE_TIME (local time)"
 
-# --- 3. Install systemd service ---------------------------------------------
-SERVICE_PATH="/etc/systemd/system/rtc-wake.service"
-echo "Installing systemd service at $SERVICE_PATH..."
+# --- 3. Clean up legacy systemd service if present --------------------------
+OLD_SERVICE="/etc/systemd/system/rtc-wake.service"
+if [[ -f "$OLD_SERVICE" ]]; then
+    echo "Removing legacy systemd service to prevent conflicts..."
+    systemctl disable --now rtc-wake.service >/dev/null 2>&1 || true
+    rm -f "$OLD_SERVICE"
+    systemctl daemon-reload
+fi
 
-cat > "$SERVICE_PATH" <<EOF
-[Unit]
-Description=Set RTC wake alarm for next $WAKE_TIME
-DefaultDependencies=no
-Before=shutdown.target poweroff.target halt.target
+# --- 4. Install final systemd system-shutdown hook --------------------------
+HOOK_DIR="/usr/lib/systemd/system-shutdown"
+HOOK_PATH="${HOOK_DIR}/rtc-wake"
 
-[Service]
-Type=oneshot
-ExecStart=/bin/sh -c '\
-  TARGET=\$(date -d "$WAKE_TIME" +%%s); \
-  NOW=\$(date +%%s); \
-  [ \$((TARGET - NOW)) -le 120 ] && TARGET=\$(date -d "tomorrow $WAKE_TIME" +%%s); \
-  echo 0 > $SYSFS_RTC; \
-  sleep 0.5; \
-  echo "\$TARGET" > $SYSFS_RTC'
+echo "Ensuring directory exists: ${HOOK_DIR}..."
+mkdir -p "${HOOK_DIR}"
 
-[Install]
-WantedBy=shutdown.target poweroff.target halt.target
+echo "Installing system-shutdown hook at $HOOK_PATH..."
+
+cat > "$HOOK_PATH" <<EOF
+#!/bin/sh
+# Systemd passes 'poweroff', 'reboot', or 'halt' as \$1
+if [ "\$1" = "poweroff" ] || [ "\$1" = "halt" ]; then
+    TARGET=\$(date -d "$WAKE_TIME" +%s)
+    NOW=\$(date +%s)
+
+    # If target time is past or less than 120 seconds ahead, schedule for tomorrow
+    if [ \$((TARGET - NOW)) -le 120 ]; then
+        TARGET=\$(date -d "tomorrow $WAKE_TIME" +%s)
+    fi
+
+    echo 0 > $SYSFS_RTC
+    sleep 0.5
+    echo "\$TARGET" > $SYSFS_RTC
+fi
 EOF
 
-# --- 4. Reload and enable service -------------------------------------------
-echo "Reloading systemd daemon and enabling rtc-wake.service..."
-systemctl daemon-reload
-systemctl enable rtc-wake.service
+chmod +x "$HOOK_PATH"
+chown root:root "$HOOK_PATH"
 
-# Arm the alarm immediately for testing
-echo "Triggering test write to $SYSFS_RTC..."
-systemctl start rtc-wake.service
+# Also ensure /lib compatibility link/path if system differs
+if [[ -d /lib/systemd && ! -d /lib/systemd/system-shutdown && ! -L /lib ]]; then
+    mkdir -p /lib/systemd/system-shutdown
+fi
 
-# --- 5. Print summary -------------------------------------------------------
+# --- 5. Arm alarm immediately for testing -----------------------------------
+echo "Arming RTC alarm immediately for testing..."
+TARGET=$(date -d "$WAKE_TIME" +%s)
+NOW=$(date +%s)
+if [ $((TARGET - NOW)) -le 120 ]; then
+    TARGET=$(date -d "tomorrow $WAKE_TIME" +%s)
+fi
+
+echo 0 > "$SYSFS_RTC"
+sleep 0.5
+echo "$TARGET" > "$SYSFS_RTC"
+
+# --- 6. Print summary -------------------------------------------------------
 ALRM_TIME=$(grep -E "^alrm_time" "$PROC_RTC" 2>/dev/null | awk '{print $3}' || echo "unknown")
 ALRM_DATE=$(grep -E "^alrm_date" "$PROC_RTC" 2>/dev/null | awk '{print $3}' || echo "unknown")
 ALRM_IRQ=$(grep -E "^alarm_IRQ" "$PROC_RTC" 2>/dev/null | awk '{print $3}' || echo "unknown")
 
 echo ""
 echo "==================================================================="
-echo " RTC Wake setup complete"
+echo " RTC Wake Hook setup complete"
 echo "==================================================================="
 echo " Target time (Local): $WAKE_TIME"
 echo " Programmed UTC date: $ALRM_DATE"
 echo " Programmed UTC time: $ALRM_TIME"
 echo " Hardware interrupt:  $ALRM_IRQ"
 echo ""
-echo " Next steps:"
-echo "  1. Ensure 'Deep Sleep' is disabled in your BIOS/UEFI so the board"
-echo "     maintains standby power."
-echo "  2. Ensure RTC alarm is set to 'By OS' in BIOS/UEFI (if available)."
-echo "  3. When shutting down (sudo poweroff), systemd will automatically"
-echo "     program the hardware alarm to wake the machine at $WAKE_TIME."
+echo " How it works now:"
+echo "  - Installed to $HOOK_PATH"
+echo "  - Fires at the absolute end of shutdown AFTER systemd-timesyncd"
+echo "    and hwclock finish, preventing the RTC alarm from being wiped."
+echo "  - Only triggers on real poweroffs, not during reboots."
 echo "==================================================================="
